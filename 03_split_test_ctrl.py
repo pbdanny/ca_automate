@@ -24,10 +24,10 @@ prjct_dbfs_spark_prefix = os.path.join(dbfs_spark_prefix, prjct_nm)
 # COMMAND ----------
 
 #---- Load Allocatin spec
-alloc_spc = spark.read.csv(os.path.join(prjct_dbfs_spark_prefix, "alloc_spec.csv"), header=True, inferSchema=True)
 alloc_spc = spark.read.csv(os.path.join(prjct_dbfs_spark_prefix, "alloc_spec_new.csv"), header=True, inferSchema=True)
 
 alloc_spc.display()
+alloc_spc
 
 # COMMAND ----------
 
@@ -64,6 +64,10 @@ allctd_trprc = allctd.join(trprc, "household_id", "left")
 # COMMAND ----------
 
 allctd_trprc = spark.read.parquet(os.path.join(prjct_abfss_prefix, "allctd_truprice.parquet"))
+
+# COMMAND ----------
+
+allctd_trprc.groupBy("ca_nm").count().display()
 
 # COMMAND ----------
 
