@@ -84,7 +84,10 @@ def _get_truprice_seg(cp_end_date: str):
 # COMMAND ----------
 
 # DBTITLE 0,Snap Txn and map truprice
-#---- Snap txn , map TruPrice, additional filter
+"""
+Snap txn , map TruPrice, additional filter
+----
+"""
 end_dt_txt = _get_last_dt_id_txt(end_wk_id)
 
 trprc_seg, _  = _get_truprice_seg(cp_end_date=end_dt_txt)
@@ -110,7 +113,10 @@ txn = \
 # COMMAND ----------
 
 # DBTITLE 0,Defined product group
-#---- Load, check product group
+"""
+Load, check product group
+----
+"""
 prd_gr = spark.read.csv(os.path.join(prjct_dbfs_spark_prefix, "prod_gr_nm.csv"), header=True, inferSchema=True)
 prd_gr.printSchema()
 print("N upc_id : ", prd_gr.count())
@@ -119,87 +125,212 @@ prd_gr.groupBy("gr_nm").count().display()
 
 # COMMAND ----------
 
-#---- Special, scope target group with gygine
+"""
+Load snap period Txn
+----
+"""
 txn = spark.read.parquet(os.path.join(prjct_abfss_prefix, "snap_txn.parquet"))
 
 # COMMAND ----------
 
-#---- Create rank of each gr_nm by sales
-gr_nm_sales_rank = \
+"""
+(1) Create table of group_nm and sales rank
+----
+(A) Special for SalzKing
+    create group by onetime / multitime + sales rank within group
+- 1-time buyer of salz_toothpaste
+- Multitime buyer of salz_toothpaste
+- Thepthai 1-time buyer
+"""
+
+#---- Standard code
+# gr_nm_sales_rank = \
+# (txn
+#  .join(prd_gr, "upc_id", "inner")
+#  .select("household_id", "gr_nm", "net_spend_amt")
+#  .groupBy("household_id", "gr_nm")
+#  .agg(F.sum("net_spend_amt").alias("sales"))
+#  .withColumn("gr_sales_rank", F.row_number().over(Window.partitionBy("gr_nm").orderBy(F.col("sales").desc())))
+# )
+
+salz_thep_prd = prd_gr.where(F.col("gr_nm").isin(["salz_toothpaste", "thepthai_toothpaste"]))
+salz_thep_time = (txn
+ .join(salz_thep_prd, "upc_id")
+ .groupBy("gr_nm", "household_id")
+ .agg(F.count_distinct("transaction_uid").alias("visits"),
+      F.sum("net_spend_amt").alias("sales"))
+ .withColumn("times_buy", F.when(F.col("visits")==1, "onetime").otherwise("multitimes"))
+ .withColumn("gr_sales_rank", F.row_number().over(Window.partitionBy("gr_nm", "times_buy").orderBy(F.col("sales").desc_nulls_last())))
+ .withColumn("gr_nm_new", F.concat_ws("_", "gr_nm", "times_buy"))
+ .select("household_id", "sales", F.col("gr_nm_new").alias("gr_nm"), "gr_sales_rank")
+ .where(F.col("gr_nm")!="thepthai_toothpaste_multitimes")
+#  .groupBy("gr_nm").agg(F.count_distinct("household_id").alias("custs")) # Check
+)
+
+(salz_thep_time
+ .write
+ .format('parquet')
+ .mode("overwrite")
+ .save(os.path.join(prjct_abfss_prefix, "gr_nm_sales_rank_part1.parquet"))
+)
+
+# COMMAND ----------
+
+"""
+(1) Create table of group_nm and sales rank
+----
+(B) Special for SalzKing
+    Other Natural HDE
+"""
+
+oth_prd = prd_gr.where(F.col("gr_nm").isin(["oth_natural_toothpaste"]))
+oth_gr = \
 (txn
- .join(prd_gr, "upc_id", "inner")
- .select("household_id", "gr_nm", "net_spend_amt")
- .groupBy("household_id", "gr_nm")
+ .where(F.col("store_format_online_subchannel_other")=="HDE")
+ .join(oth_prd, "upc_id")
+ .groupBy("gr_nm", "household_id")
  .agg(F.sum("net_spend_amt").alias("sales"))
- .withColumn("gr_sales_rank", F.row_number().over(Window.partitionBy("gr_nm").orderBy(F.col("sales").desc())))
+ .withColumn("gr_sales_rank", F.row_number().over(Window.partitionBy("gr_nm").orderBy(F.col("sales").desc_nulls_last())))
 )
 
-(gr_nm_sales_rank
+oth_gr.display()
+
+(oth_gr
  .write
  .format('parquet')
  .mode("overwrite")
- .save(os.path.join(prjct_abfss_prefix, "gr_nm_sales_rank.parquet"))
+ .save(os.path.join(prjct_abfss_prefix, "gr_nm_sales_rank_part2.parquet"))
 )
 
-gr_nm_sales_rank_pv = \
-(gr_nm_sales_rank
- .groupBy("household_id")
- .pivot("gr_nm")
- .agg(F.first("sales").alias("sales"), 
-      F.first("gr_sales_rank").alias("rank"))
+# COMMAND ----------
+
+"""
+(1) Create table of group_nm and sales rank
+----
+(C) Special for SalzKing
+    Salz toothbrush
+"""
+
+salz_brush = prd_gr.where(F.col("gr_nm").isin(["salz_toothbrush"]))
+brush_gr = \
+(txn
+ .join(salz_brush, "upc_id")
+ .groupBy("gr_nm", "household_id")
+ .agg(F.sum("net_spend_amt").alias("sales"))
+ .withColumn("gr_sales_rank", F.row_number().over(Window.partitionBy("gr_nm").orderBy(F.col("sales").desc_nulls_last())))
 )
 
-(gr_nm_sales_rank_pv 
+brush_gr.display()
+
+(brush_gr
  .write
  .format('parquet')
  .mode("overwrite")
- .save(os.path.join(prjct_abfss_prefix, "gr_nm_sales_rank_pv.parquet"))
+ .save(os.path.join(prjct_abfss_prefix, "gr_nm_sales_rank_part3.parquet"))
 )
 
-# gr_nm_list_sales_rank_map = \
-# (gr_nm_sales_rank
-#  .withColumn("map_rank", F.create_map("gr_nm", "gr_sales_rank"))
-#  .groupBy("household_id")
-#  .agg(F.collect_list("map_rank").alias("gr_rank_map"), 
-#       F.collect_list("gr_nm").alias("gr_nm_list"))
-#  .withColumn("gr_list_sort", F.sort_array("gr_nm_list"))
-#  .withColumn("n_gr", F.size("gr_nm_list"))
-# )
+# COMMAND ----------
 
-# (gr_nm_list_sales_rank_map 
-#  .write
-#  .format('parquet')
-#  .mode("overwrite")
-#  .save(os.path.join(prjct_abfss_prefix, "gr_nm_list_sales_rank_map.parquet"))
-# )
+"""
+(1) Create table of group_nm and sales rank
+----
+(D) Special for SalzKing
+    Multibrand shopper
+"""
 
+multi_brand = prd_gr.where(F.col("gr_nm").isin(["multi_brand"]))
+multi_gr = \
+(txn
+ .join(multi_brand, "upc_id")
+ .groupBy("gr_nm", "household_id")
+ .agg(F.sum("net_spend_amt").alias("sales"))
+ .withColumn("gr_sales_rank", F.row_number().over(Window.partitionBy("gr_nm").orderBy(F.col("sales").desc_nulls_last())))
+)
+
+multi_gr.display()
+
+(multi_gr
+ .write
+ .format('parquet')
+ .mode("overwrite")
+ .save(os.path.join(prjct_abfss_prefix, "gr_nm_sales_rank_part4.parquet"))
+)
+
+# COMMAND ----------
+
+"""
+(2) Combine each group nm with rank
+-----
+"""
+
+from functools import reduce
+from pprint import pprint
+
+gr_nm_paths = [f.path for f in dbutils.fs.ls(prjct_abfss_prefix)if f.name.startswith("gr_nm_sales")]
+pprint(gr_nm_paths)
+gr_nm_sfs = [spark.read.parquet(f) for f in gr_nm_paths]
+gr_nm_comb = reduce(SparkDataFrame.unionByName, gr_nm_sfs)
+gr_nm_comb.printSchema()
+
+(gr_nm_comb
+ .write
+ .format('parquet')
+ .mode("overwrite")
+ .save(os.path.join(prjct_abfss_prefix, "gr_nm_w_rank.parquet"))
+)
+
+# COMMAND ----------
+
+"""
+(3) Load (Combined) group_nm & rank
+    Adjust format for auto allocation
+-----
+
+"""
+gr_nm_w_rank = spark.read.parquet(os.path.join(prjct_abfss_prefix, "gr_nm_w_rank.parquet"))
+
+# Create hh_id , list of gr_nm and number of group
 gr_nm_list_sort = \
-(gr_nm_sales_rank
+(gr_nm_w_rank
  .groupBy("household_id")
  .agg(F.sort_array(F.collect_set("gr_nm")).alias("gr_nm_list"))
  .withColumn("n_gr", F.size("gr_nm_list"))
 )
+gr_nm_list_sort.display()
 
-gr_sale_rank_map = \
-(gr_nm_sales_rank
+# Create hh_id with mapping of gr_nm : rank
+gr_nm_w_rank_map = \
+(gr_nm_w_rank
  .withColumn("map_rank", F.create_map("gr_nm", "gr_sales_rank"))
  .withColumn("cMap", F.map_entries(F.col("map_rank")))
  .groupBy("household_id")
  .agg(F.map_from_entries(F.flatten(F.collect_set("cMap"))).alias("gr_rank_map"))
 )
+gr_nm_w_rank_map.display()
 
-gr_nm_list_sales_rank_map = gr_nm_list_sort.join(gr_sale_rank_map, "household_id", "inner")
+# Combine list , map 
+gr_nm_list_w_rank_map = gr_nm_list_sort.join(gr_nm_w_rank_map, "household_id", "inner")
 
-(gr_nm_list_sales_rank_map 
+(gr_nm_list_w_rank_map 
  .write
  .format('parquet')
  .mode("overwrite")
- .save(os.path.join(prjct_abfss_prefix, "gr_nm_list_sales_rank_map.parquet"))
+ .save(os.path.join(prjct_abfss_prefix, "gr_nm_list_w_rank_map.parquet"))
 )
+
+gr_nm_list_w_rank_map.display()
 
 # COMMAND ----------
 
-gr_nm_list_sales_rank_map.withColumn("size", F.size("gr_rank_map")).where(F.col("n_gr")!=F.col("size")).display()
+# Check list size all record must equal map size
+gr_nm_list_w_rank_map.withColumn("map_size", F.size("gr_rank_map")).where(F.col("n_gr")!=F.col("map_size")).display()
+
+# COMMAND ----------
+
+"""
+End
+----
+"""
 
 # COMMAND ----------
 
