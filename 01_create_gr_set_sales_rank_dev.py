@@ -249,15 +249,76 @@ def get_prob_next_purchase(last_buy_date: datetime,
 
     return prob_in_cmp
 
-def get_smooth_purchase_cyc():
+"""
+Probability of next purchase
+----
+Eponentail Distribution
+"""
+from datetime import datetime
+from scipy.stats import expon
+
+@udf("float")
+def get_prob_next_purchase(purchase_cycle_day: float,
+                           day_last_to_cmp_str: float,
+                           day_last_to_cmp_end: float):
+    """Get probability of next purchase date
+    will happened in campaign period
+    """
+    from scipy.stats import expon
+
+    prob_til_cmp_str = expon(scale=purchase_cycle_day).cdf(x=day_last_to_cmp_str)
+    prob_til_cmp_end = expon(scale=purchase_cycle_day).cdf(x=day_last_to_cmp_end)
+    prob_in_cmp = prob_til_cmp_end - prob_til_cmp_str
+
+    return float(prob_in_cmp)
+
+cmp_str_date_id = datetime.strptime("2022-08-01", "%Y-%m-%d")
+cmp_period_day = 14
+
+last_purchase_cyc = \
+(df
+ .groupBy("household_id")
+ .agg(F.max("date_id").alias("last_purchase_date_id"))
+ .join(hh_smth_prchs_cyc, "household_id", "outer")
+)
+
+nxt_purchase = \
+(last_purchase_cyc
+ .withColumn("day_last_to_cmp_str", F.datediff(F.lit(cmp_str_date_id) , F.col("last_purchase_date_id")))
+ .withColumn("day_last_to_cmp_end", F.col("day_last_to_cmp_str")+cmp_period_day)
+ .withColumn("prop", get_prob_next_purchase(F.col("smth_prchs_cyc"), F.col("day_last_to_cmp_str"), F.col("day_last_to_cmp_end")))
+)
+
+
+def get_smooth_purchase_cyc(sf):
     """Fixed alpha exponential smoothing with last 2 purchase cycle
     The customer must at least have 3 purchases time
     St = alpha*y(t) + (1-alpha)St-1
     latest purchse use alpha = 0.7
     last 2 purchase use (1-alpha)*(alpha) = 0.21
     """
+    alpha = 0.7
+    alpha_1 = 0.21
+    out = (sf
+           .withColumn("desc_order", F.row_number().over(Window.partitionBy("household_id").orderBy(F.col("date_id").desc_nulls_last())))
+           .where(F.col("desc_order")<=2)
+           .groupBy("household_id")
+           .pivot("desc_order")
+           .agg(F.sum("day_diff"))
+           .withColumn("smth_prchs_cyc", F.when(F.col("2").isNotNull(), F.col("1")*alpha + F.col("2")*alpha_1).otherwise(F.col("1")))
+           .select("household_id", "smth_prchs_cyc")
+    )
 
+    return out
 
+# COMMAND ----------
+"""
+Dev at local machine
+"""
+import pandas as pd
+import os
+
+cyc = pd.read_csv("/home/danny/Documents/purchase_cycle_dev.csv", parse_dates=["date_id", "prev_date_id"])
 
 
 # COMMAND ----------
