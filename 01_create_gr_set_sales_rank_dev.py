@@ -190,7 +190,81 @@ usage = \
 # )
 
 # COMMAND ----------
+"""
+Exponential Smoothing 2 data points time
+----
+Backtest for best smoothing parameter (alpha)
+got alpha = 0.5 least mean absolute error
+"""
 
+def get_smooth_purchase_cyc(sf, alpha = 0.5):
+    """Fixed alpha exponential smoothing with last 2 purchase cycle
+    The customer must at least have 3 purchases time
+    St = alpha*y(t) + (1-alpha)St-1
+    latest purchse use alpha = 0.5
+    last 2 purchase use (1-alpha)*(alpha) = 0.5
+    """
+    alpha = alpha
+    alpha_1 = 1-alpha
+    out = (sf
+           .withColumn("desc_order", F.row_number().over(Window.partitionBy("household_id").orderBy(F.col("date_id").desc_nulls_last())))
+           .where(F.col("desc_order")<=2) # Last 2 latest purchase cycle
+           .groupBy("household_id")
+           .pivot("desc_order")
+           .agg(F.sum("day_diff"))
+           .withColumn("smth_prchs_cyc", F.when(F.col("2").isNotNull(), F.col("1")*alpha + F.col("2")*alpha_1).otherwise(F.col("1")))
+           .select("household_id", "smth_prchs_cyc")
+    )
+
+    return out
+
+hh_smth_prchs_cyc = get_smooth_purchase_cyc(class_prchs_cycl)
+
+# COMMAND ----------
+"""
+Probability of next purchase
+----
+Eponential Distribution
+"""
+
+from datetime import datetime
+from scipy.stats import expon
+
+@udf("float")
+def get_prob_next_purchase(purchase_cycle_day: float,
+                           day_last_to_cmp_str: float,
+                           day_last_to_cmp_end: float):
+    """Get probability of next purchase date
+    will happened in campaign period
+    """
+    from scipy.stats import expon
+
+    prob_til_cmp_str = expon(scale=purchase_cycle_day).cdf(x=day_last_to_cmp_str)
+    prob_til_cmp_end = expon(scale=purchase_cycle_day).cdf(x=day_last_to_cmp_end)
+    prob_in_cmp = prob_til_cmp_end - prob_til_cmp_str
+
+    return float(prob_in_cmp)
+
+cmp_str_date_id = datetime.strptime("2022-08-01", "%Y-%m-%d")
+cmp_period_day = 14
+
+last_purchase_cyc = \
+(class_prchs_cycl
+ .groupBy("household_id")
+ .agg(F.max("date_id").alias("last_purchase_date_id"))
+ .join(hh_smth_prchs_cyc, "household_id", "outer")
+)
+
+nxt_purchase = \
+(last_purchase_cyc
+ .withColumn("day_last_to_cmp_str", F.datediff(F.lit(cmp_str_date_id) , F.col("last_purchase_date_id")))
+ .withColumn("day_last_to_cmp_end", F.col("day_last_to_cmp_str")+cmp_period_day)
+ .withColumn("prop", get_prob_next_purchase(F.col("smth_prchs_cyc"), F.col("day_last_to_cmp_str"), F.col("day_last_to_cmp_end")))
+)
+# COMMAND ----------
+nxt_purchase.display()
+
+# COMMAND ----------
 """
 Test Poisson distribution
 ----
@@ -228,88 +302,6 @@ x = np.linspace(rv.ppf(0.01),
                 rv.ppf(0.99), 1000)
 ax.plot(x, rv.cdf(x))
 plt.show()
-
-# COMMAND ----------
-
-def get_prob_next_purchase(last_buy_date: datetime,
-                           purchase_cycle_day: float,
-                           cmp_str_date_id: datetime,
-                           cmp_period_day: int):
-    """Get probability of next purchase date
-    will happened in campaign period
-    """
-    from scipy.stats import expon
-    day_last_to_cmp_str = cmp_str_date_id - last_buy_date
-    day_last_to_cmp_end = day_last_to_cmp_str + cmp_period_day
-
-    rv = expon(scale=purchase_cycle_day)
-    prob_til_cmp_str = rv.cdf(x=day_last_to_cmp_str)
-    prob_til_cmp_end = rv.cdf(x=day_last_to_cmp_end)
-    prob_in_cmp = prob_til_cmp_end - prob_til_cmp_str
-
-    return prob_in_cmp
-
-"""
-Probability of next purchase
-----
-Eponentail Distribution
-"""
-from datetime import datetime
-from scipy.stats import expon
-
-@udf("float")
-def get_prob_next_purchase(purchase_cycle_day: float,
-                           day_last_to_cmp_str: float,
-                           day_last_to_cmp_end: float):
-    """Get probability of next purchase date
-    will happened in campaign period
-    """
-    from scipy.stats import expon
-
-    prob_til_cmp_str = expon(scale=purchase_cycle_day).cdf(x=day_last_to_cmp_str)
-    prob_til_cmp_end = expon(scale=purchase_cycle_day).cdf(x=day_last_to_cmp_end)
-    prob_in_cmp = prob_til_cmp_end - prob_til_cmp_str
-
-    return float(prob_in_cmp)
-
-cmp_str_date_id = datetime.strptime("2022-08-01", "%Y-%m-%d")
-cmp_period_day = 14
-
-last_purchase_cyc = \
-(df
- .groupBy("household_id")
- .agg(F.max("date_id").alias("last_purchase_date_id"))
- .join(hh_smth_prchs_cyc, "household_id", "outer")
-)
-
-nxt_purchase = \
-(last_purchase_cyc
- .withColumn("day_last_to_cmp_str", F.datediff(F.lit(cmp_str_date_id) , F.col("last_purchase_date_id")))
- .withColumn("day_last_to_cmp_end", F.col("day_last_to_cmp_str")+cmp_period_day)
- .withColumn("prop", get_prob_next_purchase(F.col("smth_prchs_cyc"), F.col("day_last_to_cmp_str"), F.col("day_last_to_cmp_end")))
-)
-
-
-def get_smooth_purchase_cyc(sf):
-    """Fixed alpha exponential smoothing with last 2 purchase cycle
-    The customer must at least have 3 purchases time
-    St = alpha*y(t) + (1-alpha)St-1
-    latest purchse use alpha = 0.7
-    last 2 purchase use (1-alpha)*(alpha) = 0.21
-    """
-    alpha = 0.7
-    alpha_1 = 0.21
-    out = (sf
-           .withColumn("desc_order", F.row_number().over(Window.partitionBy("household_id").orderBy(F.col("date_id").desc_nulls_last())))
-           .where(F.col("desc_order")<=2)
-           .groupBy("household_id")
-           .pivot("desc_order")
-           .agg(F.sum("day_diff"))
-           .withColumn("smth_prchs_cyc", F.when(F.col("2").isNotNull(), F.col("1")*alpha + F.col("2")*alpha_1).otherwise(F.col("1")))
-           .select("household_id", "smth_prchs_cyc")
-    )
-
-    return out
 
 # COMMAND ----------
 """
