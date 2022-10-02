@@ -96,9 +96,9 @@ txn = \
 (txn118wk
  .where(F.col("week_id").between(strt_wk_id, end_wk_id))
  .where(F.col("customer_id").isNotNull())
- 
+
 #  .where(F.col("store_format_online_subchannel_other").isin(["GoFresh", "HDE"]))
- 
+
  .join(trprc_seg, "household_id", "left")
  .fillna(value="unclassified", subset=["truprice_seg_desc"])
 )
@@ -193,12 +193,72 @@ usage = \
 
 """
 Test Poisson distribution
+----
+https://stats.stackexchange.com/questions/411018/poisson-distribution-why-does-time-between-events-follow-an-exponential-distrib
+https://www.statology.org/exponential-distribution-python/
+https://openstax.org/books/introductory-business-statistics/pages/5-3-the-exponential-distribution
 """
 
+from scipy.stats import expon
+import numpy as np
+from matplotlib import pyplot as plt
+
+# scale = 1/lambda , = mu
+# avg time between event = 40 days
+
+# instantiate frozen rv, scale = 40
+rv = expon(scale=40)
+
+# PDF
+fig, ax = plt.subplots()
+r = rv.rvs(size=1000)
+x = np.linspace(rv.ppf(0.01),
+                rv.ppf(0.99), 1000)
+ax.plot(x, rv.pdf(x))
+ax.hist(r, density=True)
+plt.show()
+
+# prob of event happened less than 50 days
+# P(X<=50) = cdf(x=50, scale=40)
+rv.cdf(x=50)
+
+# CDF
+fig, ax = plt.subplots()
+x = np.linspace(rv.ppf(0.01),
+                rv.ppf(0.99), 1000)
+ax.plot(x, rv.cdf(x))
+plt.show()
 
 # COMMAND ----------
 
-class_prchs_cycl.count()
+def get_prob_next_purchase(last_buy_date: datetime,
+                           purchase_cycle_day: float,
+                           cmp_str_date_id: datetime,
+                           cmp_period_day: int):
+    """Get probability of next purchase date
+    will happened in campaign period
+    """
+    from scipy.stats import expon
+    day_last_to_cmp_str = cmp_str_date_id - last_buy_date
+    day_last_to_cmp_end = day_last_to_cmp_str + cmp_period_day
+
+    rv = expon(scale=purchase_cycle_day)
+    prob_til_cmp_str = rv.cdf(x=day_last_to_cmp_str)
+    prob_til_cmp_end = rv.cdf(x=day_last_to_cmp_end)
+    prob_in_cmp = prob_til_cmp_end - prob_til_cmp_str
+
+    return prob_in_cmp
+
+def get_smooth_purchase_cyc():
+    """Fixed alpha exponential smoothing with last 2 purchase cycle
+    The customer must at least have 3 purchases time
+    St = alpha*y(t) + (1-alpha)St-1
+    latest purchse use alpha = 0.7
+    last 2 purchase use (1-alpha)*(alpha) = 0.21
+    """
+
+
+
 
 # COMMAND ----------
 
@@ -306,10 +366,10 @@ gr_nm_w_rank_map = \
 )
 gr_nm_w_rank_map.display()
 
-# Combine list , map 
+# Combine list , map
 gr_nm_list_w_rank_map = gr_nm_list_sort.join(gr_nm_w_rank_map, "household_id", "inner")
 
-(gr_nm_list_w_rank_map 
+(gr_nm_list_w_rank_map
  .write
  .format('parquet')
  .mode("overwrite")
@@ -364,22 +424,22 @@ End
 # DBTITLE 1,Tendency to buy
 # MAGIC %md
 # MAGIC If the household use total product as shopping cycle
-# MAGIC A) median method 
+# MAGIC A) median method
 # MAGIC - calculate median day as total shopping cycle
 # MAGIC - find date last total product shopp
 # MAGIC - calculate next tendency day to shop = last day shopped + day shopping cycle
-# MAGIC 
+# MAGIC
 # MAGIC B) Bayes updating methods
-# MAGIC 
-# MAGIC 
-# MAGIC 
+# MAGIC
+# MAGIC
+# MAGIC
 # MAGIC If target product dominate shopping cycle
 # MAGIC A) median consumption units / day
 # MAGIC - consumption units in each basket, days to next target product shopping
 # MAGIC - median of (consumpion units / days)
 # MAGIC - find last units shopped, last day shopped
 # MAGIC - calculate next tendency day to shop = last day shopped + (last unit shopped / median (consumption units / days))
-# MAGIC 
+# MAGIC
 # MAGIC B) regression method
-# MAGIC 
+# MAGIC
 # MAGIC C) Bayes updating methods
