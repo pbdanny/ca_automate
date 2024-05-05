@@ -370,18 +370,19 @@ End
 # MAGIC - calculate median day as total shopping cycle
 # MAGIC - find date last total product shopp
 # MAGIC - calculate next tendency day to shop = last day shopped + day shopping cycle
-# MAGIC 
+# MAGIC
 # MAGIC B) Bayes updating methods
-# MAGIC 
-# MAGIC 
-# MAGIC 
+# MAGIC
+# MAGIC
+# MAGIC
 # MAGIC If target product dominate shopping cycle
 # MAGIC A) median consumption units / day
 # MAGIC - consumption units in each basket, days to next target product shopping
 # MAGIC - median of (consumpion units / days)
 # MAGIC - find last units shopped, last day shopped
 # MAGIC - calculate next tendency day to shop = last day shopped + (last unit shopped / median (consumption units / days))
-# MAGIC 
+# MAGIC
 # MAGIC B) regression method
-# MAGIC 
+# MAGIC
 # MAGIC C) Bayes updating methods
+# MAGIC
